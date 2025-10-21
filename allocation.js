@@ -174,7 +174,6 @@ export const approveAllocation = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse(`Invalid allocation id ${id}`, 400));
   }
 
-  // Find allocation
   const allocation = await Allocation.findById(id);
   if (!allocation) {
     return next(new ErrorResponse(`Allocation not found with id ${id}`, 404));
@@ -188,37 +187,22 @@ export const approveAllocation = asyncHandler(async (req, res, next) => {
 
   await allocation.save();
 
-  // Update the asset depending on allocationType
+  // Update the asset
   if (allocation.asset) {
     try {
-      const asset = await Asset.findById(allocation.asset);
+      const update = { availablity: false, allocation: allocation._id };
 
-      if (asset) {
-        // If Owner allocation -> change owner and mark unavailable
-        if (allocation.allocationType === 'Owner' && allocation.allocatedTo) {
-          const willChangeOwner =
-            !asset.owner ||
-            asset.owner.toString() !== allocation.allocatedTo.toString();
-
-          const update = { availablity: false, allocation: allocation._id };
-          if (willChangeOwner) update.owner = allocation.allocatedTo;
-
-          await Asset.findByIdAndUpdate(asset._id, update, { new: true });
-        } else {
-          // Non-owner allocation -> just mark unavailable and link allocation
-          await Asset.findByIdAndUpdate(
-            asset._id,
-            { availablity: false, allocation: allocation._id },
-            { new: true }
-          );
-        }
+      // Force change owner if allocationType === 'Owner'
+      if (allocation.allocationType === 'Owner' && allocation.allocatedTo) {
+        update.owner = allocation.allocatedTo;
       }
+
+      await Asset.findByIdAndUpdate(allocation.asset, update, { new: true });
     } catch (err) {
       console.error('Failed to update asset on approval:', err);
     }
   }
 
-  // Return populated allocation
   const populated = await Allocation.findById(allocation._id).populate(
     allocationPopulate
   );
