@@ -9,7 +9,7 @@ const allocationPopulate = [
   { path: 'allocatedTo', select: 'name email role' },
   {
     path: 'asset',
-    select: 'name serialNumber owner purchaser assetImageUrl invoiceUrl',
+    select: 'name serialNo owner purchaser photoUrl invoiceUrl',
     populate: [
       { path: 'owner', select: 'name email role' },
       { path: 'purchaser', select: 'name email role' },
@@ -163,51 +163,67 @@ export const updateAllocation = asyncHandler(async (req, res, next) => {
   });
 });
 
-// ======================================================
-// @desc     Approve Allocation
-// @route    PUT /api/v1/allocation/:id/approve
-// @access   Private
-// ======================================================
+/* ======================================================
+   @desc     Approve Allocation
+   @route    PUT /api/v1/allocation/:id/approve
+   @access   Private
+====================================================== */
 export const approveAllocation = asyncHandler(async (req, res, next) => {
   const id = req.params.id;
-  if (!isValidId(id)) {
+  if (!isValidId(id))
     return next(new ErrorResponse(`Invalid allocation id ${id}`, 400));
-  }
 
-  // Find allocation
   const allocation = await Allocation.findById(id);
-  if (!allocation) {
+  if (!allocation)
     return next(new ErrorResponse(`Allocation not found with id ${id}`, 404));
-  }
 
-  // Update allocation fields
+  console.log('✅ Approving Allocation:', id);
+  console.log('🔹 Allocation Type:', allocation.allocationType);
+  console.log('🔹 Asset ID:', allocation.asset);
+  console.log('🔹 Allocated To:', allocation.allocatedTo);
+
   allocation.requestStatus = true;
   allocation.status = 'approved';
   allocation.allocationStatusDate = new Date();
-
-  if (req.user && req.user.id) {
-    allocation.approvedBy = req.user.id;
-  }
+  if (req.user && req.user.id) allocation.approvedBy = req.user.id;
 
   await allocation.save();
 
-  // Update the asset: mark unavailable and link allocation
+  // --- Update the related asset ---
   if (allocation.asset) {
-    try {
-      await Asset.findByIdAndUpdate(
-        allocation.asset,
-        {
-          availablity: false,
-          allocation: allocation._id,
-        },
-        { new: true }
-      );
-    } catch (err) {
-      console.error('Failed to update asset availability on approve:', err);
+    const updateData = {
+      availablity: false, // Mark as unavailable once allocated
+      allocation: allocation._id,
+    };
+
+    // If this allocation transfers ownership
+    if (allocation.allocationType === 'Owner' && allocation.allocatedTo) {
+      updateData.owner = allocation.allocatedTo;
+      console.log('👑 Changing asset owner to allocatedTo user');
     }
+
+    const updatedAsset = await Asset.findByIdAndUpdate(
+      allocation.asset,
+      updateData,
+      { new: true }
+    );
+
+    if (!updatedAsset) {
+      console.error('❌ Failed to update Asset: asset not found');
+    } else {
+      console.log(
+        '✅ Asset updated:',
+        updatedAsset._id,
+        'availability:',
+        updatedAsset.availablity
+      );
+    }
+  } else {
+    console.warn(
+      '⚠️ Allocation has no asset reference, skipping asset update.'
+    );
   }
 
-  // Return populated allocation
   const populated = await Allocation.findById(allocation._id).populate(
     allocationPopulate
   );
@@ -219,26 +235,40 @@ export const approveAllocation = asyncHandler(async (req, res, next) => {
   });
 });
 
-// ======================================================
-// @desc     Reject Allocation
-// @route    PUT /api/v1/allocation/:id/reject
-// @access   Private
-// ======================================================
+/* ======================================================
+   @desc     Reject Allocation
+   @route    PUT /api/v1/allocation/:id/reject
+   @access   Private
+====================================================== */
 export const rejectAllocation = asyncHandler(async (req, res, next) => {
   const id = req.params.id;
-  if (!isValidId(id)) {
+  if (!isValidId(id))
     return next(new ErrorResponse(`Invalid allocation id ${id}`, 400));
-  }
 
   const allocation = await Allocation.findById(id);
-  if (!allocation) {
+  if (!allocation)
     return next(new ErrorResponse(`Allocation not found with id ${id}`, 404));
-  }
+
+  console.log('❌ Rejecting Allocation:', id);
 
   allocation.requestStatus = false;
   allocation.status = 'rejected';
   allocation.allocationStatusDate = new Date();
   await allocation.save();
+
+  // If an asset was linked, make sure it remains available
+  if (allocation.asset) {
+    try {
+      await Asset.findByIdAndUpdate(
+        allocation.asset,
+        { availablity: true },
+        { new: true }
+      );
+      console.log('✅ Asset set back to available:', allocation.asset);
+    } catch (err) {
+      console.error('❌ Failed to set asset availability on reject:', err);
+    }
+  }
 
   const populated = await Allocation.findById(allocation._id).populate(
     allocationPopulate
