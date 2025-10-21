@@ -170,10 +170,12 @@ export const updateAllocation = asyncHandler(async (req, res, next) => {
 // ======================================================
 export const approveAllocation = asyncHandler(async (req, res, next) => {
   const id = req.params.id;
+
   if (!isValidId(id)) {
     return next(new ErrorResponse(`Invalid allocation id ${id}`, 400));
   }
 
+  // Fetch allocation
   const allocation = await Allocation.findById(id);
   if (!allocation) {
     return next(new ErrorResponse(`Allocation not found with id ${id}`, 404));
@@ -187,12 +189,16 @@ export const approveAllocation = asyncHandler(async (req, res, next) => {
 
   await allocation.save();
 
-  // Update the asset
+  // Update the linked asset
   if (allocation.asset) {
     try {
-      const update = { availablity: false, allocation: allocation._id };
+      // Prepare update object (plain JS)
+      const update = {
+        availablity: false,
+        allocation: allocation._id,
+      };
 
-      // Force change owner if allocationType === 'Owner'
+      // Change owner if allocationType is Owner
       if (allocation.allocationType === 'Owner' && allocation.allocatedTo) {
         update.owner = allocation.allocatedTo;
       }
@@ -203,6 +209,7 @@ export const approveAllocation = asyncHandler(async (req, res, next) => {
     }
   }
 
+  // Populate allocation for response
   const populated = await Allocation.findById(allocation._id).populate(
     allocationPopulate
   );
