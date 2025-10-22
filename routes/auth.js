@@ -8,7 +8,7 @@ import {
   userList,
   updateUserRole,
 } from '../controllers/auth.js';
-import { protect } from '../middleware/auth.js';
+import { protect, authorize } from '../middleware/auth.js';
 
 const router = express.Router();
 
