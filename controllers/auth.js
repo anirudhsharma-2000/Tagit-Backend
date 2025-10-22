@@ -83,6 +83,67 @@ export const justCreate = asyncHandler(async (req, res, next) => {
   });
 });
 
+/**
+ * @desc    Update a user's role
+ * @route   PUT /api/v1/auth/:id/role
+ * @access  Private (admin only)
+ */
+export const updateUserRole = asyncHandler(async (req, res, next) => {
+  const targetUserId = req.params.id;
+  const { role } = req.body;
+
+  // auth guard: ensure requester is authenticated
+  if (!req.user || !req.user.id) {
+    return next(new ErrorResponse('Not authenticated', 401));
+  }
+
+  // only admins can change roles
+  if (req.user.role !== 'admin') {
+    return next(
+      new ErrorResponse('Not authorized to change roles. Admins only.', 403)
+    );
+  }
+
+  // validate target id
+  if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+    return next(new ErrorResponse(`Invalid user id ${targetUserId}`, 400));
+  }
+
+  // validate requested role
+  if (!role || typeof role !== 'string') {
+    return next(new ErrorResponse('Role is required in request body', 400));
+  }
+
+  const newRole = role.trim();
+  if (!ALLOWED_ROLES.includes(newRole)) {
+    return next(
+      new ErrorResponse(
+        `Invalid role. Allowed roles: ${ALLOWED_ROLES.join(', ')}`,
+        400
+      )
+    );
+  }
+
+  // perform update
+  const updated = await User.findByIdAndUpdate(
+    targetUserId,
+    { role: newRole },
+    { new: true, runValidators: true }
+  ).select('-password -refreshToken'); // remove sensitive fields
+
+  if (!updated) {
+    return next(
+      new ErrorResponse(`User not found with id ${targetUserId}`, 404)
+    );
+  }
+
+  res.status(200).json({
+    success: true,
+    message: `User role updated to '${newRole}'`,
+    data: updated,
+  });
+});
+
 //  @desc   Get Current User
 //  @route  GET /api/v1/auth/me
 //  @access  Private
