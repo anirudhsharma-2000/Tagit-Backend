@@ -96,6 +96,6 @@ export function startAvailabilityScheduler() {
   });
 
   task.start();
-  console.log(`${LOG_PREFIX} Scheduler started (checks every 1 minute)`);
+  console.log(`${LOG_PREFIX} Scheduler started (checks every 10 minute)`);
   return task;
 }
