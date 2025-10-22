@@ -3,9 +3,11 @@ import asyncHandler from '../middleware/async.js';
 import User from '../models/User.js';
 import { OAuth2Client } from 'google-auth-library';
 import jwt from 'jsonwebtoken';
+import mongoose from 'mongoose';
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const allowedDomains = ['circuithouse.tech', 'lumio.co.in'];
+const ALLOWED_ROLES = ['member', 'purchaser', 'admin'];
 
 //  @desc   Login User
 //  @route  POST /api/v1/auth/login
