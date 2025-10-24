@@ -2,6 +2,7 @@ import ErrorResponse from '../utils/ErrorResponse.js';
 import asyncHandler from '../middleware/async.js';
 import Allocation from '../models/Allocation.js';
 import Asset from '../models/Asset.js';
+import User from '../models/User.js';
 import mongoose from 'mongoose';
 
 const allocationPopulate = [
@@ -22,6 +23,17 @@ const allocationPopulate = [
  */
 function isValidId(id) {
   return mongoose.Types.ObjectId.isValid(id);
+}
+
+/**
+ * Helper: gather tokens for a list of user ids (deduped)
+ */
+async function gatherTokensForUserIds(userIds = []) {
+  const ids = Array.from(new Set(userIds.filter(Boolean).map(String)));
+  if (!ids.length) return [];
+  const users = await User.find({ _id: { $in: ids } }).select('fcmTokens');
+  const tokens = users.flatMap((u) => u.fcmTokens || []);
+  return Array.from(new Set(tokens)); // dedupe tokens
 }
 
 /**
@@ -50,6 +62,36 @@ export const createAllocation = asyncHandler(async (req, res, next) => {
         err
       );
     }
+  }
+
+  try {
+    const userIds = [];
+    if (create.allocatedTo) userIds.push(create.allocatedTo);
+    if (create.allocatedBy) userIds.push(create.allocatedBy);
+    // also notify asset owner and purchaser optionally
+    if (create.asset) {
+      const asset = await Asset.findById(create.asset).select(
+        'owner purchaser'
+      );
+      if (asset?.owner) userIds.push(asset.owner);
+      if (asset?.purchaser) userIds.push(asset.purchaser);
+    }
+
+    const tokens = await gatherTokensForUserIds(userIds);
+    if (tokens.length) {
+      const title = 'New Allocation Created';
+      const body = `Allocation (${
+        create.allocationType || 'Allocation'
+      }) created for asset`;
+      const data = {
+        type: 'allocation:create',
+        allocationId: String(create._id),
+      };
+      const fcmRes = await sendFcmToTokens(tokens, { title, body }, data);
+      console.log('FCM createAllocation result', fcmRes);
+    }
+  } catch (err) {
+    console.error('FCM error on createAllocation:', err);
   }
 
   // Populate the allocation (including asset -> owner/purchaser if allocationPopulate defined)
@@ -224,6 +266,39 @@ export const approveAllocation = asyncHandler(async (req, res, next) => {
     );
   }
 
+  // Send FCM notification about approval
+  try {
+    const userIds = [];
+    if (allocation.allocatedTo) userIds.push(allocation.allocatedTo);
+    if (allocation.allocatedBy) userIds.push(allocation.allocatedBy);
+
+    // also notify asset purchaser/owner if needed
+    if (allocation.asset) {
+      const asset = await Asset.findById(allocation.asset).select(
+        'owner purchaser'
+      );
+      if (asset?.owner) userIds.push(asset.owner);
+      if (asset?.purchaser) userIds.push(asset.purchaser);
+    }
+
+    const tokens = await gatherTokensForUserIds(userIds);
+    if (tokens.length) {
+      const title = 'Allocation Approved';
+      const body =
+        allocation.allocationType === 'Owner'
+          ? `You have been assigned ownership of the asset.`
+          : `Your allocation request has been approved.`;
+      const data = {
+        type: 'allocation:approved',
+        allocationId: String(allocation._id),
+      };
+      const fcmRes = await sendFcmToTokens(tokens, { title, body }, data);
+      console.log('FCM approveAllocation result', fcmRes);
+    }
+  } catch (err) {
+    console.error('FCM error on approveAllocation:', err);
+  }
+
   const populated = await Allocation.findById(allocation._id).populate(
     allocationPopulate
   );
@@ -268,6 +343,27 @@ export const rejectAllocation = asyncHandler(async (req, res, next) => {
     } catch (err) {
       console.error('❌ Failed to set asset availability on reject:', err);
     }
+  }
+
+  // Send FCM notification about rejection
+  try {
+    const userIds = [];
+    if (allocation.allocatedTo) userIds.push(allocation.allocatedTo);
+    if (allocation.allocatedBy) userIds.push(allocation.allocatedBy);
+
+    const tokens = await gatherTokensForUserIds(userIds);
+    if (tokens.length) {
+      const title = 'Allocation Rejected';
+      const body = `Your allocation request was rejected.`;
+      const data = {
+        type: 'allocation:rejected',
+        allocationId: String(allocation._id),
+      };
+      const fcmRes = await sendFcmToTokens(tokens, { title, body }, data);
+      console.log('FCM rejectAllocation result', fcmRes);
+    }
+  } catch (err) {
+    console.error('FCM error on rejectAllocation:', err);
   }
 
   const populated = await Allocation.findById(allocation._id).populate(
