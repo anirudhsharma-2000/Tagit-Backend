@@ -7,11 +7,13 @@ import {
   modList,
   userList,
   updateUserRole,
+  registerFcm,
 } from '../controllers/auth.js';
 import { protect, authorize } from '../middleware/auth.js';
 
 const router = express.Router();
 
+router.post('/register-fcm', protect, registerFcm);
 router.get('/', userList);
 router.put('/:id/role', protect, authorize('admin'), updateUserRole);
 router.post('/login', login);
