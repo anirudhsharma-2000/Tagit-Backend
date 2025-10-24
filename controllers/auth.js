@@ -206,3 +206,22 @@ export const userList = asyncHandler(async (req, res, next) => {
     data: users,
   });
 });
+
+// routes/auth.js (example)
+export const registerFcm = asyncHandler(async (req, res) => {
+  const { token } = req.body;
+  if (!token)
+    return res.status(400).json({ success: false, message: 'Token required' });
+
+  const user = await User.findById(req.user.id);
+  if (!user)
+    return res.status(404).json({ success: false, message: 'User not found' });
+
+  user.fcmTokens = Array.from(new Set([...(user.fcmTokens || []), token]));
+  await user.save();
+
+  res.status(200).json({
+    success: true,
+    data: 'Fcm token registered',
+  });
+});
