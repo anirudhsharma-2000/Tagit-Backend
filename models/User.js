@@ -38,6 +38,10 @@ const UserSchema = new mongoose.Schema({
     unique: true,
     // match: [emailRegex, 'Email must be at circuithouse.tech or lumio.co.in'],
   },
+    fcmTokens: {
+    type: [String],
+    default: [],
+  },
   lastLogin: {
     type: Date,
     default: Date.now,
