@@ -4,6 +4,7 @@ import Allocation from '../models/Allocation.js';
 import Asset from '../models/Asset.js';
 import User from '../models/User.js';
 import mongoose from 'mongoose';
+import { sendFcmToTokens } from '../utils/fcm.js';
 
 const allocationPopulate = [
   { path: 'allocatedBy', select: 'name email role' },
