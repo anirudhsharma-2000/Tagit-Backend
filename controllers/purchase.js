@@ -1,4 +1,5 @@
 // controllers/purchase.js
+import mongoose from 'mongoose';
 import ErrorResponse from '../utils/ErrorResponse.js';
 import asyncHandler from '../middleware/async.js';
 import Purchase from '../models/Purchase.js';
@@ -6,12 +7,50 @@ import User from '../models/User.js';
 import { sendFcmToTokens } from '../utils/fcm.js';
 
 /**
- * Helper: gather FCM tokens for an array of userIds (deduped)
+ * Normalize an array (or single) of user identifiers which may contain:
+ * - ObjectId
+ * - string id
+ * - Mongoose document / plain object with _id
+ *
+ * Returns an array of valid string ids only.
+ */
+function normalizeUserIds(input = []) {
+  if (!Array.isArray(input)) input = [input];
+  const ids = input
+    .map((v) => {
+      if (!v) return null;
+
+      // If it's a Mongoose document or plain object with _id
+      if (typeof v === 'object') {
+        if (v._id) return String(v._id);
+        // If it's an ObjectId instance
+        if (
+          v.constructor &&
+          (v.constructor.name === 'ObjectID' ||
+            v.constructor.name === 'ObjectId')
+        )
+          return String(v);
+        return null;
+      }
+
+      // primitive (string or number)
+      return String(v);
+    })
+    .filter(Boolean);
+
+  // keep only valid ObjectId strings
+  return ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
+}
+
+/**
+ * gather FCM tokens for an array of userIds (deduped)
  */
 async function gatherTokensForUserIds(userIds = []) {
-  if (!Array.isArray(userIds) || userIds.length === 0) return [];
-  const ids = Array.from(new Set(userIds.filter(Boolean).map(String)));
-  const users = await User.find({ _id: { $in: ids } })
+  const ids = normalizeUserIds(userIds);
+  if (!ids.length) return [];
+
+  const uniqueIds = Array.from(new Set(ids));
+  const users = await User.find({ _id: { $in: uniqueIds } })
     .select('fcmTokens name')
     .lean();
   const tokens = users.flatMap((u) =>
@@ -21,7 +60,7 @@ async function gatherTokensForUserIds(userIds = []) {
 }
 
 /**
- * Helper: notify all admins
+ * notify all admins helper
  */
 async function notifyAdmins(title, body, data = {}) {
   try {
@@ -43,9 +82,11 @@ async function notifyAdmins(title, body, data = {}) {
  */
 export const createRequest = asyncHandler(async (req, res, next) => {
   const create = await Purchase.create(req.body);
+
+  // populate only for response convenience (doesn't affect token logic)
   await create.populate('requiredBy requestedBy', 'name email role');
 
-  // Notify involved users and admins
+  // Send notifications to requiredBy, requestedBy and admins
   try {
     const userIds = [];
     if (create.requiredBy) userIds.push(create.requiredBy);
@@ -59,12 +100,18 @@ export const createRequest = asyncHandler(async (req, res, next) => {
       }`;
       const data = { type: 'purchase:create', purchaseId: String(create._id) };
       await sendFcmToTokens(tokens, { title, body }, data);
+    } else {
+      console.log(
+        'createRequest: no tokens found for involved users',
+        normalizeUserIds(userIds)
+      );
     }
 
+    // notify admins
     await notifyAdmins(
       'New Purchase Request',
       `${create.assetName || 'Purchase request'} created`,
-      { type: 'purchase:create', purchaseId: String(create._id) }
+      { type: 'purchase:create', purchaseId: String(create._1d) }
     );
   } catch (err) {
     console.error('FCM error on createRequest:', err);
@@ -108,6 +155,11 @@ export const updateRequest = asyncHandler(async (req, res, next) => {
       }" has been updated`;
       const data = { type: 'purchase:update', purchaseId: String(request._id) };
       await sendFcmToTokens(tokens, { title, body }, data);
+    } else {
+      console.log(
+        'updateRequest: no tokens found for involved users',
+        normalizeUserIds(userIds)
+      );
     }
 
     await notifyAdmins(
