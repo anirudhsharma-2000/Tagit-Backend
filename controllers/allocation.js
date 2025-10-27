@@ -220,82 +220,95 @@ export const approveAllocation = asyncHandler(async (req, res, next) => {
   if (!allocation)
     return next(new ErrorResponse(`Allocation not found with id ${id}`, 404));
 
-  console.log('✅ Approving Allocation:', id);
-  console.log('🔹 Allocation Type:', allocation.allocationType);
-  console.log('🔹 Asset ID:', allocation.asset);
-  console.log('🔹 Allocated To:', allocation.allocatedTo);
-
+  // Update allocation fields
   allocation.requestStatus = true;
   allocation.status = 'approved';
   allocation.allocationStatusDate = new Date();
   if (req.user && req.user.id) allocation.approvedBy = req.user.id;
-
   await allocation.save();
 
-  // --- Update the related asset ---
+  // Update asset availability & owner if needed
   if (allocation.asset) {
-    const updateData = {
-      availablity: false, // Mark as unavailable once allocated
-      allocation: allocation._id,
-    };
-
-    // If this allocation transfers ownership
-    if (allocation.allocationType === 'Owner' && allocation.allocatedTo) {
-      updateData.owner = allocation.allocatedTo;
-      console.log('👑 Changing asset owner to allocatedTo user');
+    try {
+      const updateData = { availablity: false, allocation: allocation._id };
+      if (allocation.allocationType === 'Owner' && allocation.allocatedTo) {
+        updateData.owner = allocation.allocatedTo;
+      }
+      await Asset.findByIdAndUpdate(allocation.asset, updateData, {
+        new: true,
+      });
+    } catch (err) {
+      console.error('Failed to update asset after approval:', err);
     }
-
-    const updatedAsset = await Asset.findByIdAndUpdate(
-      allocation.asset,
-      updateData,
-      { new: true }
-    );
-
-    if (!updatedAsset) {
-      console.error('❌ Failed to update Asset: asset not found');
-    } else {
-      console.log(
-        '✅ Asset updated:',
-        updatedAsset._id,
-        'availability:',
-        updatedAsset.availablity
-      );
-    }
-  } else {
-    console.warn(
-      '⚠️ Allocation has no asset reference, skipping asset update.'
-    );
   }
 
-  // Send FCM notification about approval
-  try {
-    const userIds = [];
-    if (allocation.allocatedTo) userIds.push(allocation.allocatedTo);
-    if (allocation.allocatedBy) userIds.push(allocation.allocatedBy);
+  // Populate for friendly messages
+  const populatedAllocation = await Allocation.findById(
+    allocation._id
+  ).populate(allocationPopulate);
 
-    // also notify asset purchaser/owner if needed
-    if (allocation.asset) {
-      const asset = await Asset.findById(allocation.asset).select(
-        'owner purchaser'
-      );
-      if (asset?.owner) userIds.push(asset.owner);
-      if (asset?.purchaser) userIds.push(asset.purchaser);
+  // --- Personalized FCM notifications ---
+  try {
+    const toUserIds = []; // allocatedTo + optionally asset owner/purchaser for info
+    const byUserIds = []; // allocatedBy + optionally asset purchaser/owner
+
+    if (populatedAllocation.allocatedTo)
+      toUserIds.push(populatedAllocation.allocatedTo);
+    if (populatedAllocation.allocatedBy)
+      byUserIds.push(populatedAllocation.allocatedBy);
+
+    if (populatedAllocation.asset) {
+      const asset = populatedAllocation.asset;
+      // include asset owner/purchaser in byUserIds so owner/purchaser also get notified about the approval
+      if (asset.owner) byUserIds.push(asset.owner);
+      if (asset.purchaser) byUserIds.push(asset.purchaser);
     }
 
-    const tokens = await gatherTokensForUserIds(userIds);
-    if (tokens.length) {
-      const title = 'Allocation Approved';
+    const toTokens = await gatherTokensForUserIds(toUserIds);
+    const byTokens = await gatherTokensForUserIds(byUserIds);
+
+    const assetName = populatedAllocation.asset?.name || 'the asset';
+    const toName = populatedAllocation.allocatedTo?.name || 'User';
+    const byName =
+      populatedAllocation.allocatedBy?.name || req.user?.name || 'User';
+
+    // Notification for allocatedTo (recipient)
+    if (toTokens.length) {
+      const title =
+        populatedAllocation.allocationType === 'Owner'
+          ? 'You are now the owner'
+          : 'Allocation approved';
       const body =
-        allocation.allocationType === 'Owner'
-          ? `You have been assigned ownership of the asset.`
-          : `Your allocation request has been approved.`;
+        populatedAllocation.allocationType === 'Owner'
+          ? `${toName}, you have been assigned ownership of ${assetName}.`
+          : `${toName}, your allocation request for ${assetName} has been approved.`;
       const data = {
         type: 'allocation:approved',
-        allocationId: String(allocation._id),
+        allocationId: String(populatedAllocation._id),
+        assetId: String(populatedAllocation.asset?._id || ''),
       };
-      const fcmRes = await sendFcmToTokens(tokens, { title, body }, data);
-      console.log('FCM approveAllocation result', fcmRes);
+      await sendFcmToTokens(toTokens, { title, body }, data);
     }
+
+    // Notification for allocatedBy (requester / actor)
+    if (byTokens.length) {
+      const title =
+        populatedAllocation.allocationType === 'Owner'
+          ? 'Ownership assigned'
+          : 'Allocation approved';
+      const body =
+        populatedAllocation.allocationType === 'Owner'
+          ? `${byName}, ${toName} has been assigned ownership of ${assetName}.`
+          : `${byName}, the allocation request for ${assetName} has been approved.`;
+      const data = {
+        type: 'allocation:approved',
+        allocationId: String(populatedAllocation._id),
+        assetId: String(populatedAllocation.asset?._id || ''),
+      };
+      await sendFcmToTokens(byTokens, { title, body }, data);
+    }
+
+    console.log('FCM approveAllocation: notifications sent');
   } catch (err) {
     console.error('FCM error on approveAllocation:', err);
   }
@@ -303,7 +316,6 @@ export const approveAllocation = asyncHandler(async (req, res, next) => {
   const populated = await Allocation.findById(allocation._id).populate(
     allocationPopulate
   );
-
   res.status(200).json({
     success: true,
     message: 'Allocation approved successfully',
@@ -325,14 +337,15 @@ export const rejectAllocation = asyncHandler(async (req, res, next) => {
   if (!allocation)
     return next(new ErrorResponse(`Allocation not found with id ${id}`, 404));
 
-  console.log('❌ Rejecting Allocation:', id);
-
   allocation.requestStatus = false;
   allocation.status = 'rejected';
   allocation.allocationStatusDate = new Date();
+  if (req.body.rejectionReason)
+    allocation.rejectionReason = req.body.rejectionReason;
+  if (req.user && req.user.id) allocation.rejectedBy = req.user.id;
   await allocation.save();
 
-  // If an asset was linked, make sure it remains available
+  // Reset asset availability if linked
   if (allocation.asset) {
     try {
       await Asset.findByIdAndUpdate(
@@ -340,29 +353,65 @@ export const rejectAllocation = asyncHandler(async (req, res, next) => {
         { availablity: true },
         { new: true }
       );
-      console.log('✅ Asset set back to available:', allocation.asset);
     } catch (err) {
-      console.error('❌ Failed to set asset availability on reject:', err);
+      console.error('Failed to set asset availability on reject:', err);
     }
   }
 
-  // Send FCM notification about rejection
-  try {
-    const userIds = [];
-    if (allocation.allocatedTo) userIds.push(allocation.allocatedTo);
-    if (allocation.allocatedBy) userIds.push(allocation.allocatedBy);
+  // Populate for friendly messages
+  const populatedAllocation = await Allocation.findById(
+    allocation._id
+  ).populate(allocationPopulate);
 
-    const tokens = await gatherTokensForUserIds(userIds);
-    if (tokens.length) {
+  // --- Personalized FCM notifications ---
+  try {
+    const toUserIds = [];
+    const byUserIds = [];
+
+    if (populatedAllocation.allocatedTo)
+      toUserIds.push(populatedAllocation.allocatedTo);
+    if (populatedAllocation.allocatedBy)
+      byUserIds.push(populatedAllocation.allocatedBy);
+
+    if (populatedAllocation.asset) {
+      const asset = populatedAllocation.asset;
+      if (asset.owner) byUserIds.push(asset.owner);
+      if (asset.purchaser) byUserIds.push(asset.purchaser);
+    }
+
+    const toTokens = await gatherTokensForUserIds(toUserIds);
+    const byTokens = await gatherTokensForUserIds(byUserIds);
+
+    const assetName = populatedAllocation.asset?.name || 'the asset';
+    const toName = populatedAllocation.allocatedTo?.name || 'User';
+    const byName =
+      populatedAllocation.allocatedBy?.name || req.user?.name || 'User';
+
+    // Message for allocatedTo (they were rejected)
+    if (toTokens.length) {
       const title = 'Allocation Rejected';
-      const body = `Your allocation request was rejected.`;
+      const body = `${toName}, your allocation request for ${assetName} was rejected.`;
       const data = {
         type: 'allocation:rejected',
-        allocationId: String(allocation._id),
+        allocationId: String(populatedAllocation._id),
+        assetId: String(populatedAllocation.asset?._id || ''),
       };
-      const fcmRes = await sendFcmToTokens(tokens, { title, body }, data);
-      console.log('FCM rejectAllocation result', fcmRes);
+      await sendFcmToTokens(toTokens, { title, body }, data);
     }
+
+    // Message for allocatedBy (requester / actor)
+    if (byTokens.length) {
+      const title = 'Allocation Rejected';
+      const body = `${byName}, the allocation request for ${assetName} has been rejected.`;
+      const data = {
+        type: 'allocation:rejected',
+        allocationId: String(populatedAllocation._id),
+        assetId: String(populatedAllocation.asset?._id || ''),
+      };
+      await sendFcmToTokens(byTokens, { title, body }, data);
+    }
+
+    console.log('FCM rejectAllocation: notifications sent');
   } catch (err) {
     console.error('FCM error on rejectAllocation:', err);
   }
@@ -370,7 +419,6 @@ export const rejectAllocation = asyncHandler(async (req, res, next) => {
   const populated = await Allocation.findById(allocation._id).populate(
     allocationPopulate
   );
-
   res.status(200).json({
     success: true,
     message: 'Allocation rejected successfully',
