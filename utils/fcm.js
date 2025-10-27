@@ -1,7 +1,7 @@
 // utils/fcm.js
 import { initFirebaseAdmin } from './firebaseAdmin.js';
 
-const admin = initFirebaseAdmin();
+const admin = initFirebaseAdmin(); // returns admin module or null
 
 export async function sendFcmToTokens(
   tokens = [],
@@ -30,8 +30,15 @@ export async function sendFcmToTokens(
   };
 
   try {
-    const res = await admin.messaging().sendMulticast(message);
-    // res: { successCount, failureCount, responses: [...] }
+    // for firebase-admin v11+, use sendEachForMulticast
+    const res = await admin.messaging().sendEachForMulticast(message);
+    console.log(`📨 FCM sent ${res.successCount}/${validTokens.length}`);
+    if (res.failureCount) {
+      console.warn(
+        '⚠️ FCM failures:',
+        res.responses.filter((r) => !r.success)
+      );
+    }
     return res;
   } catch (err) {
     console.error('FCM sendMulticast error', err);

@@ -38,7 +38,7 @@ const UserSchema = new mongoose.Schema({
     unique: true,
     // match: [emailRegex, 'Email must be at circuithouse.tech or lumio.co.in'],
   },
-    fcmTokens: {
+  fcmTokens: {
     type: [String],
     default: [],
   },

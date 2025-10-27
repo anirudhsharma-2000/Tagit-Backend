@@ -1,22 +1,27 @@
 // utils/firebaseAdmin.js
 import admin from 'firebase-admin';
+import fs from 'fs';
+import path from 'path';
 
 let firebaseAdminInstance = null;
 
 export function initFirebaseAdmin() {
   if (firebaseAdminInstance) return firebaseAdminInstance;
 
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (!raw) {
-    console.warn('FIREBASE_SERVICE_ACCOUNT_JSON not set — FCM disabled');
+  // Load service account JSON from file
+  const filePath = path.resolve('./utils/firebase-admin.json');
+  if (!fs.existsSync(filePath)) {
+    console.error(
+      'Firebase service account JSON file not found — FCM disabled'
+    );
     return null;
   }
 
   let serviceAccount;
   try {
-    serviceAccount = JSON.parse(raw);
+    serviceAccount = JSON.parse(fs.readFileSync(filePath, 'utf8'));
   } catch (err) {
-    console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON:', err);
+    console.error('Failed to parse Firebase service account JSON:', err);
     return null;
   }
 
