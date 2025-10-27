@@ -190,9 +190,37 @@ async function notifyAdmins(
 function purchaseSummaryForNotify(purchaseDoc = {}) {
   const requestedBy = purchaseDoc.requestedBy || {};
   const requiredBy = purchaseDoc.requiredBy || {};
+
+  // Resolve asset name from multiple possible places:
+  // 1) purchaseDoc.assetName (string)
+  // 2) purchaseDoc.asset?.name (populated asset object)
+  // 3) purchaseDoc.model (string)
+  // Final fallback: 'Unknown Asset'
+  let assetName = '';
+  if (
+    typeof purchaseDoc.assetName === 'string' &&
+    purchaseDoc.assetName.trim()
+  ) {
+    assetName = purchaseDoc.assetName.trim();
+  } else if (
+    purchaseDoc.asset &&
+    typeof purchaseDoc.asset === 'object' &&
+    purchaseDoc.assetName
+  ) {
+    assetName = String(purchaseDoc.assetName).trim();
+  } else if (
+    typeof purchaseDoc.assetName === 'string' &&
+    purchaseDoc.model.trim()
+  ) {
+    assetName = purchaseDoc.assetName.trim();
+  } else {
+    assetName = 'Unknown Asset';
+  }
+
   return {
-    assetName: purchaseDoc.assetName || 'Asset',
-    quantity: purchaseDoc.quantity || purchaseDoc.qty || 1,
+    assetName,
+    // quantity removed from user emails earlier; keep in summary if you need it internally
+    quantity: purchaseDoc.quantity || purchaseDoc.qty || null,
     requestedByName: requestedBy.name || '—',
     requestedByEmail: requestedBy.email || '—',
     requiredByName: requiredBy.name || '—',
@@ -254,7 +282,6 @@ Hello ${summary.requiredByName},
 A new purchase request has been created.
 
 Asset: ${summary.assetName}
-Quantity: ${summary.quantity}
 Requested By: ${summary.requestedByName} (${summary.requestedByEmail})
 Requested For: ${summary.requiredByName} (${summary.requiredByEmail})
 Status: ${summary.status}
@@ -283,7 +310,6 @@ Hello Admin,
 A new purchase request has been created.
 
 Asset: ${summary.assetName}
-Quantity: ${summary.quantity}
 Requested By: ${summary.requestedByName} (${summary.requestedByEmail})
 Requested For: ${summary.requiredByName} (${summary.requiredByEmail})
 Status: ${summary.status}
@@ -363,7 +389,6 @@ Hello ${summary.requiredByName},
 A purchase request has been updated.
 
 Asset: ${summary.assetName}
-Quantity: ${summary.quantity}
 Requested By: ${summary.requestedByName} (${summary.requestedByEmail})
 Requested For: ${summary.requiredByName} (${summary.requiredByEmail})
 Status: ${summary.status}
@@ -392,7 +417,6 @@ Hello Admin,
 A purchase request has been updated.
 
 Asset: ${summary.assetName}
-Quantity: ${summary.quantity}
 Requested By: ${summary.requestedByName} (${summary.requestedByEmail})
 Requested For: ${summary.requiredByName} (${summary.requiredByEmail})
 Status: ${summary.status}
