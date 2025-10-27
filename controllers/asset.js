@@ -2,9 +2,18 @@
 import ErrorResponse from '../utils/ErrorResponse.js';
 import asyncHandler from '../middleware/async.js';
 import Asset from '../models/Asset.js';
-import { sendFcmToTokens } from '../utils/fcm.js';
 import User from '../models/User.js';
 import mongoose from 'mongoose';
+import { sendFcmToTokens } from '../utils/fcm.js';
+import sendEmail from '../utils/sendMail.js';
+
+const ASSET_POPULATE_FIELDS = [
+  { path: 'purchaser', select: 'name email role' },
+  { path: 'owner', select: 'name email role' },
+  { path: 'allocation', select: 'allocationType allocatedBy allocatedTo' },
+];
+
+/* ---------------------- Helpers ---------------------- */
 
 /**
  * Normalize a list of user identifiers (ids, ObjectId, or populated objects with _id)
@@ -17,7 +26,6 @@ function normalizeUserIds(input = []) {
       if (!v) return null;
       if (typeof v === 'object') {
         if (v._id) return String(v._id);
-        // sometimes Mongoose ObjectId instance
         if (
           v.constructor &&
           (v.constructor.name === 'ObjectID' ||
@@ -50,6 +58,35 @@ async function gatherTokensForUserIds(userIds = []) {
 }
 
 /**
+ * Gather emails (and names) for given user ids (accepts ids or populated objects).
+ * Returns array of { email, name } deduped.
+ */
+async function gatherEmailsForUserIds(userIds = []) {
+  const ids = normalizeUserIds(userIds);
+  if (!ids.length) return [];
+  const uniqueIds = Array.from(new Set(ids));
+  const users = await User.find({ _id: { $in: uniqueIds } })
+    .select('email name')
+    .lean();
+
+  const list = users
+    .map((u) =>
+      u && u.email ? { email: String(u.email), name: u.name || '' } : null
+    )
+    .filter(Boolean);
+
+  const seen = new Set();
+  const unique = [];
+  for (const item of list) {
+    if (!seen.has(item.email)) {
+      seen.add(item.email);
+      unique.push(item);
+    }
+  }
+  return unique;
+}
+
+/**
  * Gather tokens for all admins.
  */
 async function gatherAdminTokens() {
@@ -60,62 +97,233 @@ async function gatherAdminTokens() {
   return Array.from(new Set(tokens.filter(Boolean)));
 }
 
-// -------------------- Create Asset --------------------
-export const createAsset = asyncHandler(async (req, res, next) => {
-  const create = await Asset.create(req.body);
-  await create.populate('purchaser owner allocation', 'name email role');
+/**
+ * Gather admin emails.
+ */
+async function gatherAdminEmails() {
+  const admins = await User.find({ role: 'admin' }).select('email name').lean();
+  const list = admins
+    .map((a) =>
+      a && a.email ? { email: String(a.email), name: a.name || '' } : null
+    )
+    .filter(Boolean);
+  const seen = new Set();
+  const unique = [];
+  for (const item of list) {
+    if (!seen.has(item.email)) {
+      seen.add(item.email);
+      unique.push(item);
+    }
+  }
+  return unique;
+}
 
-  // --- Send FCM to purchaser/owner + admins ---
+/**
+ * Send emails to list of { email, name } recipients, concurrently.
+ * Returns summary { sent, failed, failures }.
+ */
+async function sendEmailsToRecipients(recipients = [], subject, body) {
+  if (!recipients || !recipients.length)
+    return { sent: 0, failed: 0, failures: [] };
+
+  if (typeof sendEmail !== 'function') {
+    console.error(
+      'sendEmail is not a function - check utils/sendMail.js export'
+    );
+    return {
+      sent: 0,
+      failed: recipients.length,
+      failures: recipients.map((r) => ({
+        email: r.email,
+        error: 'sendEmail missing',
+      })),
+    };
+  }
+
+  const promises = recipients.map((r) =>
+    sendEmail({ email: r.email, subject, body })
+      .then(() => ({ email: r.email, ok: true }))
+      .catch((err) => ({
+        email: r.email,
+        ok: false,
+        error: err.message || String(err),
+      }))
+  );
+
+  const results = await Promise.allSettled(promises);
+  const failures = [];
+  let sent = 0;
+  for (const res of results) {
+    if (res.status === 'fulfilled' && res.value && res.value.ok) sent++;
+    else {
+      const info = (res.status === 'fulfilled' ? res.value : res.reason) || {};
+      failures.push(info);
+    }
+  }
+  return { sent, failed: failures.length, failures };
+}
+
+/**
+ * Small helper to build an asset summary used in notifications/emails.
+ * Sanitizes fields (prevents functions showing up) and avoids leaking internal DB ids.
+ * NOTE: warranty expiry removed as requested.
+ */
+function assetSummaryForNotify(assetDoc = {}) {
+  // model sanitization
+  let modelText = '';
+  try {
+    if (typeof assetDoc.model === 'string') {
+      modelText = assetDoc.model;
+    } else if (
+      assetDoc.model &&
+      typeof assetDoc.model === 'object' &&
+      assetDoc.model.name
+    ) {
+      modelText = String(assetDoc.model.name);
+    } else if (assetDoc.model && typeof assetDoc.model !== 'function') {
+      modelText = String(assetDoc.model);
+    } else {
+      modelText = '';
+    }
+  } catch (e) {
+    modelText = '';
+  }
+
+  const serial = assetDoc.serialNo || assetDoc.serial || '';
+
+  // Prefer purchasedOn, fallback to purchaseDate
+  const purchasedOnRaw =
+    assetDoc.purchasedOn ||
+    assetDoc.purchaseDate ||
+    assetDoc.purchasedAt ||
+    null;
+  const purchasedOn = purchasedOnRaw ? new Date(purchasedOnRaw) : null;
+  const purchaseDateText = purchasedOn
+    ? purchasedOn.toLocaleDateString('en-IN')
+    : '—';
+
+  return {
+    name: assetDoc.name || 'Unknown asset',
+    model: modelText || '—',
+    serialNo: serial || '—',
+    purchaseDate: purchaseDateText,
+    purchaserName: assetDoc.purchaser?.name || '—',
+    purchaserEmail: assetDoc.purchaser?.email || '—',
+    ownerName: assetDoc.owner?.name || '—',
+    ownerEmail: assetDoc.owner?.email || '—',
+  };
+}
+
+/* ---------------------- Controllers ---------------------- */
+
+// Create Asset
+export const createAsset = asyncHandler(async (req, res, next) => {
+  const created = await Asset.create(req.body);
+
+  // Re-query populated document to ensure purchaser/owner are populated
+  const populatedAsset = await Asset.findById(created._id).populate(
+    ASSET_POPULATE_FIELDS
+  );
+
   try {
     const targetUserIds = [];
-    if (create.purchaser) targetUserIds.push(create.purchaser);
-    if (create.owner) targetUserIds.push(create.owner);
+    if (populatedAsset.purchaser) targetUserIds.push(populatedAsset.purchaser);
+    if (populatedAsset.owner) targetUserIds.push(populatedAsset.owner);
 
-    // get tokens for purchaser/owner
     const tokens = await gatherTokensForUserIds(targetUserIds);
-
-    // get admin tokens separately and merge
     const adminTokens = await gatherAdminTokens();
     const allTokens = Array.from(
       new Set([...(tokens || []), ...(adminTokens || [])])
     );
 
+    const summary = assetSummaryForNotify(populatedAsset);
+
     if (allTokens.length) {
-      await sendFcmToTokens(
-        allTokens,
-        { title: 'New Asset Created', body: `${create.name} created.` },
-        { type: 'asset:create', assetId: String(create._id) }
-      );
+      try {
+        await sendFcmToTokens(
+          allTokens,
+          { title: 'New Asset Created', body: `${summary.name} created.` },
+          { type: 'asset:create', asset: summary }
+        );
+      } catch (err) {
+        console.error('FCM error on createAsset:', err);
+      }
     } else {
       console.log(
         'createAsset: no FCM tokens found for purchaser/owner/admins'
       );
     }
+
+    // Emails to purchaser/owner + admins
+    const recipients = [];
+    if (populatedAsset.purchaser) recipients.push(populatedAsset.purchaser);
+    if (populatedAsset.owner) recipients.push(populatedAsset.owner);
+    const recipientEmails = await gatherEmailsForUserIds(recipients);
+    const adminEmails = await gatherAdminEmails();
+    // merge unique by email
+    const allRecipientEmails = Array.from(
+      new Map(
+        [...recipientEmails, ...adminEmails].map((r) => [r.email, r])
+      ).values()
+    );
+
+    if (allRecipientEmails.length) {
+      const subject = 'TAGit — New Asset Created';
+      const emailBody = `
+Hello,
+
+A new asset has been registered in TAGit.
+
+Asset: ${summary.name}
+Model: ${summary.model}
+Serial No: ${summary.serialNo}
+Purchase Date: ${summary.purchaseDate}
+
+Purchaser: ${summary.purchaserName} (${summary.purchaserEmail})
+Owner: ${summary.ownerName} (${summary.ownerEmail})
+
+Regards,
+TAGit
+      `;
+      const emailRes = await sendEmailsToRecipients(
+        allRecipientEmails,
+        subject,
+        emailBody
+      );
+      if (emailRes.failed)
+        console.warn('createAsset email failures', emailRes.failures);
+      else console.log(`createAsset Emails sent: ${emailRes.sent}`);
+    } else {
+      console.log(
+        'createAsset: no email recipients found for purchaser/owner/admins'
+      );
+    }
   } catch (err) {
-    console.error('FCM error on createAsset:', err);
+    console.error('Notification error on createAsset:', err);
   }
 
-  res.status(200).json({
-    success: true,
-    data: create,
-  });
+  res.status(201).json({ success: true, data: populatedAsset });
 });
 
-// -------------------- Update Asset --------------------
+// Update Asset
 export const updateAsset = asyncHandler(async (req, res, next) => {
-  const update = await Asset.findByIdAndUpdate(req.params.id, req.body, {
+  const updated = await Asset.findByIdAndUpdate(req.params.id, req.body, {
     new: true,
     runValidators: true,
-  })
-    .populate('purchaser', 'name email role')
-    .populate('owner', 'name email role')
-    .populate('allocation', 'name email role');
+  });
 
-  // --- Send FCM to purchaser/owner + admins ---
+  if (!updated)
+    return next(new ErrorResponse(`Asset not found ${req.params.id}`, 404));
+
+  const populatedUpdate = await Asset.findById(updated._id).populate(
+    ASSET_POPULATE_FIELDS
+  );
+
   try {
     const targetUserIds = [];
-    if (update.purchaser) targetUserIds.push(update.purchaser);
-    if (update.owner) targetUserIds.push(update.owner);
+    if (populatedUpdate.purchaser)
+      targetUserIds.push(populatedUpdate.purchaser);
+    if (populatedUpdate.owner) targetUserIds.push(populatedUpdate.owner);
 
     const tokens = await gatherTokensForUserIds(targetUserIds);
     const adminTokens = await gatherAdminTokens();
@@ -123,37 +331,85 @@ export const updateAsset = asyncHandler(async (req, res, next) => {
       new Set([...(tokens || []), ...(adminTokens || [])])
     );
 
+    const summary = assetSummaryForNotify(populatedUpdate);
+
     if (allTokens.length) {
-      await sendFcmToTokens(
-        allTokens,
-        { title: 'Asset Updated', body: `${update.name} updated.` },
-        { type: 'asset:update', assetId: String(update._id) }
-      );
+      try {
+        await sendFcmToTokens(
+          allTokens,
+          { title: 'Asset Updated', body: `${summary.name} updated.` },
+          { type: 'asset:update', asset: summary }
+        );
+      } catch (err) {
+        console.error('FCM error on updateAsset:', err);
+      }
     } else {
       console.log(
         'updateAsset: no FCM tokens found for purchaser/owner/admins'
       );
     }
+
+    // Emails
+    const recipientEmails = [];
+    if (populatedUpdate.purchaser)
+      recipientEmails.push(populatedUpdate.purchaser);
+    if (populatedUpdate.owner) recipientEmails.push(populatedUpdate.owner);
+    const recipientList = await gatherEmailsForUserIds(recipientEmails);
+    const adminList = await gatherAdminEmails();
+    const allRecipientEmails = Array.from(
+      new Map(
+        [...recipientList, ...adminList].map((r) => [r.email, r])
+      ).values()
+    );
+
+    if (allRecipientEmails.length) {
+      const subject = 'TAGit — Asset Updated';
+      const emailBody = `
+Hello,
+
+An asset has been updated in TAGit.
+
+Asset: ${summary.name}
+Model: ${summary.model}
+Serial No: ${summary.serialNo}
+Purchase Date: ${summary.purchaseDate}
+
+Purchaser: ${summary.purchaserName} (${summary.purchaserEmail})
+Owner: ${summary.ownerName} (${summary.ownerEmail})
+
+Regards,
+TAGit
+      `;
+      const emailRes = await sendEmailsToRecipients(
+        allRecipientEmails,
+        subject,
+        emailBody
+      );
+      if (emailRes.failed)
+        console.warn('updateAsset email failures', emailRes.failures);
+      else console.log(`updateAsset Emails sent: ${emailRes.sent}`);
+    } else {
+      console.log(
+        'updateAsset: no email recipients found for purchaser/owner/admins'
+      );
+    }
   } catch (err) {
-    console.error('FCM error on updateAsset:', err);
+    console.error('Notification error on updateAsset:', err);
   }
 
-  res.status(200).json({
-    success: true,
-    data: update,
-  });
+  res.status(200).json({ success: true, data: populatedUpdate });
 });
 
-// -------------------- Delete Asset --------------------
+// Delete Asset
 export const deleteAsset = asyncHandler(async (req, res, next) => {
-  let asset = await Asset.findById(req.params.id);
-  if (!asset) {
+  let asset = await Asset.findById(req.params.id).populate(
+    ASSET_POPULATE_FIELDS
+  );
+  if (!asset)
     return next(
       new ErrorResponse(`Asset Does not Exist ${req.params.id}`, 404)
     );
-  }
 
-  // Optional: notify purchaser and owner + admins
   try {
     const targetUserIds = [];
     if (asset.purchaser) targetUserIds.push(asset.purchaser);
@@ -165,29 +421,76 @@ export const deleteAsset = asyncHandler(async (req, res, next) => {
       new Set([...(tokens || []), ...(adminTokens || [])])
     );
 
+    const summary = assetSummaryForNotify(asset);
+
     if (allTokens.length) {
-      await sendFcmToTokens(
-        allTokens,
-        { title: 'Asset Deleted', body: `${asset.name} has been deleted.` },
-        { type: 'asset:delete', assetId: String(asset._id) }
-      );
+      try {
+        await sendFcmToTokens(
+          allTokens,
+          { title: 'Asset Deleted', body: `${summary.name} has been deleted.` },
+          { type: 'asset:delete', asset: summary }
+        );
+      } catch (err) {
+        console.error('FCM error on deleteAsset:', err);
+      }
     } else {
       console.log(
         'deleteAsset: no FCM tokens found for purchaser/owner/admins'
       );
     }
+
+    // Emails
+    const recipientEmails = [];
+    if (asset.purchaser) recipientEmails.push(asset.purchaser);
+    if (asset.owner) recipientEmails.push(asset.owner);
+    const recipientList = await gatherEmailsForUserIds(recipientEmails);
+    const adminList = await gatherAdminEmails();
+    const allRecipientEmails = Array.from(
+      new Map(
+        [...recipientList, ...adminList].map((r) => [r.email, r])
+      ).values()
+    );
+
+    if (allRecipientEmails.length) {
+      const subject = 'TAGit — Asset Deleted';
+      const emailBody = `
+Hello,
+
+An asset has been deleted from TAGit.
+
+Asset: ${summary.name}
+Model: ${summary.model}
+Serial No: ${summary.serialNo}
+Purchase Date: ${summary.purchaseDate}
+
+Purchaser: ${summary.purchaserName} (${summary.purchaserEmail})
+Owner: ${summary.ownerName} (${summary.ownerEmail})
+
+Regards,
+TAGit
+      `;
+      const emailRes = await sendEmailsToRecipients(
+        allRecipientEmails,
+        subject,
+        emailBody
+      );
+      if (emailRes.failed)
+        console.warn('deleteAsset email failures', emailRes.failures);
+      else console.log(`deleteAsset Emails sent: ${emailRes.sent}`);
+    } else {
+      console.log(
+        'deleteAsset: no email recipients found for purchaser/owner/admins'
+      );
+    }
   } catch (err) {
-    console.error('FCM error on deleteAsset:', err);
+    console.error('Notification error on deleteAsset:', err);
   }
 
-  asset = await Asset.findByIdAndDelete(req.params.id);
-  res.status(200).json({
-    success: true,
-    data: {},
-  });
+  await Asset.findByIdAndDelete(req.params.id);
+  res.status(200).json({ success: true, data: {} });
 });
 
-// -------------------- Get Asset List By ID --------------------
+// Get Asset List By User ID
 export const getAssetListById = asyncHandler(async (req, res, next) => {
   const userId = req.params.id;
   const assets = await Asset.find({
@@ -200,23 +503,17 @@ export const getAssetListById = asyncHandler(async (req, res, next) => {
   })
     .populate('purchaser', 'name email role')
     .populate('owner', 'name email role')
-    .populate('allocation', 'name email role');
+    .populate('allocation', 'allocationType allocatedBy allocatedTo');
 
-  res.status(200).json({
-    success: true,
-    data: assets,
-  });
+  res.status(200).json({ success: true, data: assets });
 });
 
-// -------------------- Get All Assets --------------------
+// Get All Assets
 export const getAssets = asyncHandler(async (req, res, next) => {
   const assets = await Asset.find()
     .populate('purchaser', 'name email role')
     .populate('owner', 'name email role')
-    .populate('allocation', 'name email role');
+    .populate('allocation', 'allocationType allocatedBy allocatedTo');
 
-  res.status(200).json({
-    success: true,
-    data: assets,
-  });
+  res.status(200).json({ success: true, data: assets });
 });
