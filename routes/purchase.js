@@ -1,7 +1,6 @@
 import express from 'express';
 import {
   createRequest,
-  updateManagerRequest,
   updateRequest,
   getRequests,
   getAllRequests,
@@ -13,7 +12,6 @@ const router = express.Router();
 router.route('/').post(protect, createRequest).get(protect, getAllRequests);
 router
   .route('/:id')
-  .put(protect, updateManagerRequest)
   .get(protect, getRequests);
 
 router.put(
