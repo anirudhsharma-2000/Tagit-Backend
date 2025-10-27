@@ -10,9 +10,7 @@ import { protect, authorize } from '../middleware/auth.js';
 const router = express.Router();
 
 router.route('/').post(protect, createRequest).get(protect, getAllRequests);
-router
-  .route('/:id')
-  .get(protect, getRequests);
+router.route('/:id').get(protect, getRequests);
 
 router.put(
   '/request/:id',

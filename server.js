@@ -22,7 +22,9 @@ import allocation from './routes/allocation.js';
 const app = express();
 
 startAvailabilityScheduler();
-initFirebaseAdmin();
+(async () => {
+  await initFirebaseAdmin();
+})();
 //Body Parser
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());

@@ -4,13 +4,14 @@ import { JWT } from 'google-auth-library';
 
 let firebaseAdminInstance = null;
 
+/**
+ * Initializes Firebase Admin once and reuses it.
+ */
 export async function initFirebaseAdmin() {
-  // Reuse existing initialized app
-  if (admin.apps.length) return admin;
+  // Return existing initialized instance
+  if (firebaseAdminInstance && admin.apps.length) return firebaseAdminInstance;
 
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  console.log(raw);
-
   if (!raw) {
     console.warn('⚠️ FIREBASE_SERVICE_ACCOUNT_JSON not set — FCM disabled');
     return null;
@@ -28,17 +29,14 @@ export async function initFirebaseAdmin() {
   }
 
   // Fix escaped newlines in private key
-  if (
-    serviceAccount.private_key &&
-    serviceAccount.private_key.includes('\\n')
-  ) {
+  if (serviceAccount.private_key?.includes('\\n')) {
     serviceAccount.private_key = serviceAccount.private_key.replace(
       /\\n/g,
       '\n'
     );
   }
 
-  // Validate credentials before initializing Firebase Admin
+  // Verify credentials (optional but helpful)
   try {
     const jwtClient = new JWT({
       email: serviceAccount.client_email,
@@ -52,13 +50,11 @@ export async function initFirebaseAdmin() {
     console.log('🔐 Firebase credentials verified successfully');
   } catch (err) {
     console.error('❌ Failed to verify Firebase credentials:', err.message);
-    console.error(
-      '➡️ Try re-downloading a new service account key from Firebase Console.'
-    );
+    console.error('➡️ Re-download a new key from Firebase Console.');
     return null;
   }
 
-  // Initialize Firebase Admin SDK
+  // Initialize Firebase Admin
   try {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
