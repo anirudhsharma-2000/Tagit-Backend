@@ -503,16 +503,34 @@ TAGit
 // Get Asset List By User ID
 export const getAssetListById = asyncHandler(async (req, res, next) => {
   const userId = req.params.id;
-  const assets = await applyAssetPopulate(
-    Asset.find({
-      $or: [
-        { purchaser: userId },
-        { owner: userId },
-        { 'allocation.allocatedBy': userId },
-        { 'allocation.allocatedTo': userId },
-      ],
-    })
-  ).exec();
+
+  // validate ObjectId
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid user id',
+    });
+  }
+
+  const userObjId = new mongoose.Types.ObjectId(userId);
+
+  // Step 1: Find allocations where user is allocatedBy or allocatedTo
+  const allocations = await Allocation.find({
+    $or: [{ allocatedBy: userObjId }, { allocatedTo: userObjId }],
+  })
+    .select('_id')
+    .lean();
+
+  const allocationIds = allocations.map((a) => a._id);
+
+  // Step 2: Find assets related to user or those allocations
+  const assets = await Asset.find({
+    $or: [
+      { purchaser: userObjId },
+      { owner: userObjId },
+      ...(allocationIds.length ? [{ allocation: { $in: allocationIds } }] : []),
+    ],
+  }).populate(ASSET_POPULATE_FIELDS);
 
   res.status(200).json({ success: true, data: assets });
 });
