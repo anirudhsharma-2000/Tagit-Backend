@@ -522,3 +522,25 @@ export const getAssets = asyncHandler(async (req, res, next) => {
   const assets = await applyAssetPopulate(Asset.find()).exec();
   res.status(200).json({ success: true, data: assets });
 });
+
+/**
+ * @desc    Get full details of a single asset by ID
+ * @route   GET /api/assets/:id
+ * @access  Private (adjust as per your middleware)
+ */
+export const getAssetDetailsById = asyncHandler(async (req, res, next) => {
+  const { id } = req.params;
+
+  // Fetch asset by ID and deeply populate all related fields
+  const asset = await Asset.findById(id).populate(ASSET_POPULATE_FIELDS);
+
+  if (!asset) {
+    res.status(404);
+    throw new Error('Asset not found');
+  }
+
+  res.status(200).json({
+    success: true,
+    data: asset,
+  });
+});
