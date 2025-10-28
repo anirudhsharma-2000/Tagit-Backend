@@ -3,6 +3,7 @@ import ErrorResponse from '../utils/ErrorResponse.js';
 import asyncHandler from '../middleware/async.js';
 import Asset from '../models/Asset.js';
 import User from '../models/User.js';
+import Allocation from '../models/Allocation.js';
 import mongoose from 'mongoose';
 import { sendFcmToTokens } from '../utils/fcm.js';
 import sendEmail from '../utils/sendMail.js';
@@ -10,8 +11,19 @@ import sendEmail from '../utils/sendMail.js';
 const ASSET_POPULATE_FIELDS = [
   { path: 'purchaser', select: 'name email role' },
   { path: 'owner', select: 'name email role' },
-  { path: 'allocation', select: 'allocationType allocatedBy allocatedTo' },
+  {
+    path: 'allocation',
+    populate: [
+      { path: 'allocatedBy', select: 'name email role' },
+      { path: 'allocatedTo', select: 'name email role' },
+    ],
+  },
 ];
+
+// helper to apply consistent populate fields
+function applyAssetPopulate(query) {
+  return query.populate(ASSET_POPULATE_FIELDS);
+}
 
 /* ---------------------- Helpers ---------------------- */
 
@@ -24,8 +36,10 @@ function normalizeUserIds(input = []) {
   const ids = input
     .map((v) => {
       if (!v) return null;
+      // If already populated object with _id
       if (typeof v === 'object') {
         if (v._id) return String(v._id);
+        // If it's an ObjectId instance
         if (
           v.constructor &&
           (v.constructor.name === 'ObjectID' ||
@@ -218,12 +232,11 @@ function assetSummaryForNotify(assetDoc = {}) {
 
 // Create Asset
 export const createAsset = asyncHandler(async (req, res, next) => {
+  // Create asset
   const created = await Asset.create(req.body);
 
-  // Re-query populated document to ensure purchaser/owner are populated
-  const populatedAsset = await Asset.findById(created._id).populate(
-    ASSET_POPULATE_FIELDS
-  );
+  // Re-query populated document to ensure purchaser/owner/allocation (and nested allocatedBy/allocatedTo) are populated
+  const populatedAsset = await applyAssetPopulate(Asset.findById(created._id));
 
   try {
     const targetUserIds = [];
@@ -315,9 +328,7 @@ export const updateAsset = asyncHandler(async (req, res, next) => {
   if (!updated)
     return next(new ErrorResponse(`Asset not found ${req.params.id}`, 404));
 
-  const populatedUpdate = await Asset.findById(updated._id).populate(
-    ASSET_POPULATE_FIELDS
-  );
+  const populatedUpdate = await applyAssetPopulate(Asset.findById(updated._id));
 
   try {
     const targetUserIds = [];
@@ -402,9 +413,7 @@ TAGit
 
 // Delete Asset
 export const deleteAsset = asyncHandler(async (req, res, next) => {
-  let asset = await Asset.findById(req.params.id).populate(
-    ASSET_POPULATE_FIELDS
-  );
+  let asset = await applyAssetPopulate(Asset.findById(req.params.id)).lean();
   if (!asset)
     return next(
       new ErrorResponse(`Asset Does not Exist ${req.params.id}`, 404)
@@ -493,27 +502,22 @@ TAGit
 // Get Asset List By User ID
 export const getAssetListById = asyncHandler(async (req, res, next) => {
   const userId = req.params.id;
-  const assets = await Asset.find({
-    $or: [
-      { purchaser: userId },
-      { owner: userId },
-      { 'allocation.allocatedBy': userId },
-      { 'allocation.allocatedTo': userId },
-    ],
-  })
-    .populate('purchaser', 'name email role')
-    .populate('owner', 'name email role')
-    .populate('allocation', 'allocationType allocatedBy allocatedTo');
+  const assets = await applyAssetPopulate(
+    Asset.find({
+      $or: [
+        { purchaser: userId },
+        { owner: userId },
+        { 'allocation.allocatedBy': userId },
+        { 'allocation.allocatedTo': userId },
+      ],
+    })
+  ).exec();
 
   res.status(200).json({ success: true, data: assets });
 });
 
 // Get All Assets
 export const getAssets = asyncHandler(async (req, res, next) => {
-  const assets = await Asset.find()
-    .populate('purchaser', 'name email role')
-    .populate('owner', 'name email role')
-    .populate('allocation', 'allocationType allocatedBy allocatedTo');
-
+  const assets = await applyAssetPopulate(Asset.find()).exec();
   res.status(200).json({ success: true, data: assets });
 });
