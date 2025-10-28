@@ -9,13 +9,13 @@ import { sendFcmToTokens } from '../utils/fcm.js';
 import sendEmail from '../utils/sendMail.js';
 
 const ASSET_POPULATE_FIELDS = [
-  { path: 'purchaser', select: 'name email role' },
-  { path: 'owner', select: 'name email role' },
+  { path: 'purchaser', select: 'name email role profilePhotoUrl' },
+  { path: 'owner', select: 'name email role profilePhotoUrl' },
   {
     path: 'allocation',
     populate: [
-      { path: 'allocatedBy', select: 'name email role' },
-      { path: 'allocatedTo', select: 'name email role' },
+      { path: 'allocatedBy', select: 'name email role profilePhotoUrl' },
+      { path: 'allocatedTo', select: 'name email role profilePhotoUrl' },
       { path: 'asset', select: 'name model serialNo' },
     ],
   },
