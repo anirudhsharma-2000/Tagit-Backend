@@ -4,6 +4,7 @@ import {
   updateAsset,
   deleteAsset,
   getAssetListById,
+  getAssetDetailsById,
   getAssets,
 } from '../controllers/asset.js';
 import { protect, authorize } from '../middleware/auth.js';
@@ -19,5 +20,7 @@ router
   .put(protect, authorize('admin', 'purchaser'), updateAsset)
   .delete(protect, authorize('admin', 'purchaser'), deleteAsset)
   .get(protect, getAssetListById);
+
+router.route('/detail/:id').get(protect, getAssetDetailsById);
 
 export default router;
