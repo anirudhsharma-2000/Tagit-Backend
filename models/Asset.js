@@ -1,6 +1,21 @@
 import mongoose from 'mongoose';
 
-const AssetSchema = mongoose.Schema({
+// Counter Schema
+const CounterSchema = new mongoose.Schema({
+  _id: { type: String, required: true }, // e.g., "asset"
+  seq: { type: Number, default: 0 },
+});
+
+// Prevent overwrite in dev reloads
+const Counter =
+  mongoose.models.Counter || mongoose.model('Counter', CounterSchema);
+
+// Asset Schema
+const AssetSchema = new mongoose.Schema({
+  chId: {
+    type: String,
+    unique: true,
+  },
   name: { type: String, required: true },
   serialNo: {
     type: String,
@@ -35,4 +50,22 @@ const AssetSchema = mongoose.Schema({
   purchasedOn: { type: String },
 });
 
-export default mongoose.model('Asset', AssetSchema);
+// Pre-save hook to auto-generate chId
+AssetSchema.pre('save', async function (next) {
+  if (this.isNew && !this.chId) {
+    const counter = await Counter.findByIdAndUpdate(
+      { _id: 'asset' },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
+
+    // Zero pad to 2 digits — adjust as needed (e.g., padStart(3) for 001, 002, 003)
+    const formattedSeq = String(counter.seq).padStart(2, '0');
+
+    this.chId = `ch/${formattedSeq}`;
+  }
+  next();
+});
+
+const Asset = mongoose.models.Asset || mongoose.model('Asset', AssetSchema);
+export default Asset;
