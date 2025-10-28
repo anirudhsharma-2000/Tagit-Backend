@@ -16,6 +16,7 @@ const ASSET_POPULATE_FIELDS = [
     populate: [
       { path: 'allocatedBy', select: 'name email role' },
       { path: 'allocatedTo', select: 'name email role' },
+      { path: 'asset', select: 'name model serialNo' },
     ],
   },
 ];
